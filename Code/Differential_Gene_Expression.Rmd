@@ -1,0 +1,171 @@
+---
+title: "Limma Analysis"
+output: html_document
+date: "2024-03-26"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-libraries}
+library(limma)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r load-data}
+# Load necessary data files
+fpkm_table_normalized <- read.csv("fpkm_table_normalized.csv", header = TRUE, row.names = 1)
+donor_info <- read.csv("donor_information.csv", header = TRUE)
+columns_samples <- read.csv("columns-samples.csv", header = TRUE)
+gene_names <- read.csv("rows-genes.csv", header = TRUE, row.names = 1)
+```
+
+```{r filter-dataset}
+# Remove X in front of column names
+names(fpkm_table_normalized) <- gsub("^X", "", names(fpkm_table_normalized))
+
+# Calculate the proportion of samples that have 0 as the value for each gene
+zeros_proportion <- rowSums(fpkm_table_normalized == 0) / ncol(fpkm_table_normalized)
+
+# Find the rows (genes) for which 50% or more of the columns (samples) have non-zero values
+indices <- which(zeros_proportion <= 0.5)
+
+# Create a dataframe which only contains genes where over 50% of samples have non-zero measurements
+fpkm_filtered <- fpkm_table_normalized[indices, ]
+```
+
+```{r define-grouped-dataset}
+# Transpose the dataframe so rnaseq_profile_id is the rows and gene_id is the columns
+fpkm_filtered_transpose <- as.data.frame(t(fpkm_filtered))
+
+# Make rnaseq_profile_id a column
+fpkm_filtered_transpose$rnaseq_profile_id <- rownames(fpkm_filtered_transpose)
+
+# Merge the information about a sample's rnaseq_profile_id with whether the 
+# donor that sample is from had a TBI or their dementia diagnosis by the donor_id
+sample_diagnosis_info <- merge(columns_samples[c('rnaseq_profile_id', 'donor_id')], 
+                               donor_info[c('donor_id', 'ever_tbi_w_loc', 'act_demented')], 
+                               by = 'donor_id')
+
+# Remove the donor_id column
+sample_diagnosis_info <- sample_diagnosis_info[, !(names(sample_diagnosis_info)
+                                                   %in% c('donor_id'))]
+
+# Create a new variable with the group the patient is in by combining the 
+#information about ever having a TBI with their dementia diagnosis
+sample_diagnosis_info$group <- paste(sample_diagnosis_info$ever_tbi_w_loc,
+                                     sample_diagnosis_info$act_demented, 
+                                     sep = "_")
+
+# Remove all columns except the rnaseq_profile_id and the group
+sample_diagnosis_grouped <- sample_diagnosis_info[c('rnaseq_profile_id', 
+                                                    'group')]
+
+# Change all spaces in the values for group to underscores
+sample_diagnosis_grouped$group <- gsub(" ", "_", sample_diagnosis_grouped$group)
+
+# Convert rnaseq_profile_id to a string to match the type of rnaseq_profile id 
+#in the fpkm_filtered_transpose dataframe
+sample_diagnosis_grouped$rnaseq_profile_id <- 
+  as.character(sample_diagnosis_grouped$rnaseq_profile_id)
+
+# Merge the group information with the fpkm_filtered_transpose dataframe by the 
+# rnaseq_profile_id
+samples_grouped_filtered <- inner_join(fpkm_filtered_transpose, 
+                                       sample_diagnosis_grouped, 
+                                       by = "rnaseq_profile_id")
+
+# Set the rnaseq_profile_id as the row index
+rownames(samples_grouped_filtered) <- samples_grouped_filtered$rnaseq_profile_id
+samples_grouped_filtered$rnaseq_profile_id <- NULL
+```
+
+```{r limma-trend}
+# Create the design matrix of the groups each sample is in
+design <- model.matrix(~0 + group, data = samples_grouped_filtered)
+
+# Set the column names of the design matrix as the 4 diagnosis groups
+colnames(design) <- c("N_No_Dementia", "N_Dementia", "Y_No_Dementia", "Y_Dementia")
+
+# Fit the data to the trend based on the diagnosis group
+trend_fit <- lmFit(fpkm_filtered, design)
+
+# Define the contrast as comparing the group with dementia and tbi to the control
+# healthy group
+contrasts <- makeContrasts(dementia_by_tbi_status = Y_Dementia - N_No_Dementia,
+                           levels = colnames(design))
+
+# Apply empirical bayes statistics
+trend_ebayes <- eBayes(contrasts.fit(trend_fit,
+                                     contrasts))
+```
+
+```{r differenitally-expressed-genes}
+# Create a list of the genes sorted by adjusted p value
+top_genes <- topTable(trend_ebayes, coef = 1,
+                      number = 32756,
+                      adjust.method = "fdr")
+
+# Label the genes as downregulated, upregulated, or not significant
+top_genes <- top_genes %>% 
+  mutate(adj_significance = case_when(
+    adj.P.Val < 0.05 & logFC < -1 ~ "Downregulated",
+    adj.P.Val < 0.05 & logFC > 1 ~ "Upregulated",
+    TRUE ~ "Not Significant"
+  ))
+```
+
+```{r}
+# Create a subset of the significant genes
+significant_genes <- top_genes[top_genes$adj_significance %in% c("Upregulated", "Downregulated"), ]
+
+# Add the gene names and symbols to the subset of genes
+gene_labels = merge(significant_genes, gene_names, by = "row.names")
+```
+
+
+```{r}
+# Add colors
+my_colors = c("red", "grey", "blue")
+
+# Create volcano plot
+volcano_plot <- ggplot(top_genes,
+                       aes(x = logFC,
+                           y = -log10(adj.P.Val))) +
+  # Color points by significance
+  geom_point(alpha = 0.6,
+             aes(color = adj_significance)) +
+  # Define colors as set color scheme
+  scale_color_manual(values = my_colors) +
+  # Add vertical and horizontal lines for significance threshold
+  geom_vline(xintercept = c(-1, 1),
+             linetype = "dashed",
+             color = "black",
+             linewidth = 0.5) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed",
+             color = "black",
+             linewidth = 0.5) +
+  # Set the size of x axis
+  xlim(c(-20, 20)) +
+  # add labels
+  labs(title = "Differential gene expression in brain biopsy samples from donors\nwith TBI and Dementia compared to healthy control donors",
+       x = "log(fold change)",
+       y = "-log10(FDR corrected p value)",
+       color = "Expression Status") +
+  theme_minimal() +
+  # Center titles
+  theme(legend.title = element_text(hjust = 0.5),
+                plot.title = element_text(hjust = 0.5))
+
+# Add gene symbols for differentially expressed genes
+volcano_plot <- volcano_plot +
+  geom_text(data = gene_labels,
+            aes(label = gene_symbol),
+            vjust = -1)
+print(volcano_plot)
+```
