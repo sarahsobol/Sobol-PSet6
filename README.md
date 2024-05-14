@@ -103,7 +103,8 @@ To run the code, python (Jupyter Notebook optional), R, and RStudio need to be d
 - limma (one may have to install BioCManager to install limma if not already installed)
 - ggplot2
 - dplyr
-- -VennDiagram
+- VennDiagram
+  
 Once the packages are installed and if the datasets are in the file path with the R project and Differential_Gene_Expression_Analysis.Rmd file the code should run from there to generate the lists of differentially expressed genes, volcano plots, venn diagrams, and datasets to use in the PCA analysis. The two data files from the Differential_Gene_Expression_Analysis.Rmd can then be input into the pca_analysis.py file along with loading the following packages: pandas, numpy, scipy, stats from scipy, multiple tests from statsmodels.stats.multitest, StandardScaler from sklearn.preprocessing, PCA from sklearn.decomposition, seaborn, and matplotlib.pyplot. Finally, the apoe4_pathway.csv and non_apoe4_pathway.csv files can be downloaded and stored in the same file pathway as the R project to run the Gene_Ontology.Rmd code to generate the chord diagrams. The only package needed for this code to run is circlize.
 
 **Citations:**
