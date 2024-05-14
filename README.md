@@ -1,4 +1,4 @@
-Evaluating differentially expressed genes between healthy control donors and donors that have experienced a traumatic brain injury and have dementia
+Transcriptional Analysis of the Correlation Between Traumatic Brain Injury and Dementia: Investigating the Impact of APOE Genotype
 
 Overview:
 
