@@ -1,0 +1,637 @@
+---
+title: "Differential Gene Expression Analysis"
+output: html_document
+date: "2024-05-13"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package-loading}
+library(limma)
+library(ggplot2)
+library(dplyr)
+library(VennDiagram)
+```
+
+```{r data-loading}
+# Load the FPKM values where the columns are samples and the rows are genes with
+# the group labeled in three parts (APOE4 status)_(TBI history)_(Dementia status).
+# A "Y" for APOE4 status means the sample is from an APOE4+ donor and "N" means
+# the sample is from an APOE4- donor. A "Y" for TBI history means the sample is
+# from a donor that has had 1 or more TBI and "N" means the sample is from a donor
+# that has not had a TBI. A "Dementia" label for dementia status means that the
+# sample is from a patient with dementia and a "No_Dementia" label means the
+# sample is from a patient without dementia. For example, Y_N_Dementia would be
+# a sample from a donor who was APOE4+, had never experienced a TBI, and was
+# diagnosed with dementia.
+
+# Load labeled FPKM values for all brain regions combined
+samples_grouped_combined <- read.csv("New_Data/samples_grouped_combined.csv",
+                                     header = TRUE, row.names = 1, 
+                                     check.names = FALSE)
+# Load labeled FPKM values for the hippocampus samples
+samples_grouped_HIP <- read.csv("New_Data/samples_grouped_HIP.csv", 
+                                header = TRUE, row.names = 1, 
+                                check.names = FALSE)
+# Load labeled FPKM values for the temporal cortex samples
+samples_grouped_TCx <- read.csv("New_Data/samples_grouped_TCx.csv",
+                                header = TRUE, row.names = 1,
+                                check.names = FALSE)
+# Load labeled FPKM values for the parietal cortex samples
+samples_grouped_PCx <- read.csv("New_Data/samples_grouped_PCx.csv",
+                                header = TRUE, row.names = 1,
+                                check.names = FALSE)
+# Load labeled FPKM values for the forebrain white matter samples
+samples_grouped_FWM <- read.csv("New_Data/samples_grouped_FWM.csv",
+                                header = TRUE, row.names = 1,
+                                check.names = FALSE)
+
+# Load FPKM values where the rows are genes and the columns are samples.
+
+# Load FPKM values for all brain regions combined
+fpkm_combined <- read.csv("New_Data/fpkm_combined.csv", 
+                          header = TRUE, row.names = 1, 
+                          check.names = FALSE)
+# Load FPKM values for the hippocampus samples
+fpkm_HIP <- read.csv("New_Data/fpkm_HIP.csv", header = TRUE, 
+                     row.names = 1, check.names = FALSE)
+# Load FPKM values for the temporal cortex samples
+fpkm_TCx <- read.csv("New_Data/fpkm_TCx.csv", header = TRUE, 
+                     row.names = 1, check.names = FALSE)
+# Load FPKM values for the parietal cortex samples
+fpkm_PCx <- read.csv("New_Data/fpkm_PCx.csv", header = TRUE, 
+                     row.names = 1, check.names = FALSE)
+# Load FPKM values for the forebrain white matter samples
+fpkm_FWM <- read.csv("New_Data/fpkm_FWM.csv", header = TRUE, 
+                     row.names = 1, check.names = FALSE)
+
+# Load dataset with information linking the unique gene id to other gene markers
+# such as gene symbol and entrez gene id
+gene_names <- read.csv("New_Data/rows-genes.csv", header = TRUE)
+```
+
+```{r limma-analysis-function}
+# Create function to perform a differential gene expression analysis with limma
+# for 4 different comparisons:
+# 1: TBI + Dementia vs. TBI + No Dementia for APOE4+ donors
+# 2: TBI + Dementia vs. No TBI + Dementia for APOE4+ donors
+# 3: TBI + Dementia vs. TBI + No Dementia for APOE4- donors
+# 4: TBI + Dementia vs. No TBI + Dementia for APOE4- donors
+
+differential_expression <- function(grouped_transposed_dataset, ungrouped_dataset) {
+  # Inputs:
+  # grouped_transposed_dataset: dataset of FPKM values where the rows are samples
+  #                             and the columns are genes and each sample has its
+  #                             group label
+  # ungrouped dataset: dataset of FPKM values where the rows are genes and the
+  #                    columns are samples
+  
+  # Output:
+  # DEGs_list: list that stores the dataframes for the limma analysis for each
+  #            contrast with the genes, logFC, p-value, adjusted p-value, and
+  #            uncorrected and corrected significance regulation labels
+  
+  # Create the design matrix based on the assigned groups for each sample
+  design <- model.matrix(~0 + group, data = grouped_transposed_dataset)
+  # Define the column names as the group labels
+  colnames(design) <- c("N_N_Dementia", "N_N_No_Dementia", "N_Y_Dementia", "N_Y_No_Dementia",
+                        "Y_N_Dementia", "Y_N_No_Dementia", "Y_Y_Dementia", "Y_Y_No_Dementia")
+  
+  # Define the four different contrasts to analyze
+  contrasts <- makeContrasts(apoe4_tbi_by_dem_stat = Y_Y_Dementia - Y_Y_No_Dementia,
+                             apoe4_dem_by_tbi_stat = Y_Y_Dementia - Y_N_Dementia,
+                             no_apoe4_tbi_by_dem_stat = N_Y_Dementia - N_Y_No_Dementia,
+                             no_apoe4_dem_by_tbi_stat = N_Y_Dementia - N_N_Dementia,
+                             levels = colnames(design))
+  
+  # Fit the linear model to the log2 transformation of the FPKM data
+  fit <- lmFit(log2(ungrouped_dataset + 0.001), design)
+  # Apply an empirical bayesian correction
+  fit <- eBayes(fit, trend = TRUE)
+  # Fit to each of the contrasts
+  contrast.fit <- contrasts.fit(fit, contrasts)
+  # Apply an empirical bayesian correction to the contrast fits
+  trend_ebayes <- eBayes(contrast.fit)
+  
+  # Create a list to store the DEGs
+  DEGs_list <- list()
+  # Label the DEGs as upregulated, downregulated, or not significant for each contrast
+  for (i in 1:ncol(contrasts)) {
+    # Perform an FDR multiple hypothesis testing correction for each contrast
+    df <- topTable(trend_ebayes, coef = i,
+                         number = Inf,
+                         adjust.method = "fdr")
+    # Create a variable to store the uncorrected significance regulation for each gene
+    df <- df %>% 
+      mutate(significance = case_when(
+        P.Value < 0.05 & logFC < -0.5 ~ "Downregulated",
+        P.Value < 0.05 & logFC > 0.5 ~ "Upregulated",
+        TRUE ~ "Not Significant"
+      )) %>% 
+      # Create a variable to store the FDR corrected significant regulation for each gene
+      mutate(adj_significance = case_when(
+        adj.P.Val < 0.05 & logFC < -0.5 ~ "Downregulated",
+        adj.P.Val < 0.05 & logFC > 0.5 ~ "Upregulated",
+        TRUE ~ "Not Significant"
+      ))
+    # Store the name of the genes as top_genes with the contrast number
+    # 1: TBI + Dementia vs. TBI + No Dementia for APOE4+ donors
+    # 2: TBI + Dementia vs. No TBI + Dementia for APOE4+ donors
+    # 3: TBI + Dementia vs. TBI + No Dementia for APOE4- donors
+    # 4: TBI + Dementia vs. No TBI + Dementia for APOE4- donors
+    df_name <- paste0("top_genes", i)
+    # Store the genes and their significance
+    DEGs_list[[df_name]] <- df
+  }
+  # Return the tables of genes and significance for each contrast
+  return(DEGs_list)
+}
+```
+
+```{r limma-analysis-stratified}
+# Perform the differential expression analysis for each of the brain regions and
+# combined overall brain region
+DEGs_comb <- differential_expression(samples_grouped_combined, fpkm_combined)
+DEGs_HIP <- differential_expression(samples_grouped_HIP, fpkm_HIP)
+DEGs_TCx <- differential_expression(samples_grouped_TCx, fpkm_TCx)
+DEGs_PCx <- differential_expression(samples_grouped_PCx, fpkm_PCx)
+DEGs_FWM <- differential_expression(samples_grouped_FWM, fpkm_FWM)
+```
+
+```{r DEGs-function}
+# Create a function to store the non-FDR corrected significantly differentially
+# expressed genes in a folder on the computer as the entrez id
+DEGs_by_regulation <- function(DEGs_list, region_label, folder_path) {
+  # Inputs:
+  # DEGs_list: the list of the dataframes with the limma results from the 
+  #            differential gene expression analysis
+  # region_label: label for the brain region that the DEGs_list is for
+  # folder_path: path on the computer to store the results in
+  
+  # Outputs:
+  # upregulated_list: the list of the significantly upregulated genes without
+  #                   FDR correction
+  # downregulated_list: the list of the significantly downregulated genes without
+  #                   FDR correction
+  # significant_list: the list of the significantly differentially expressed genes
+  #                   without FDR correction
+  
+  # Create lists to store genes
+  upregulated_list <- list()
+  downregulated_list <- list()
+  significant_list <- list()
+  
+  # Create a for loop to store the DEGs for all the contrasts
+  for (i in 1:length(DEGs_list)) {
+    # Find the indices where the genes are up or downregulated
+    indices_up <- which(DEGs_list[[i]]$significance == 'Upregulated')
+    indices_down <- which(DEGs_list[[i]]$significance == 'Downregulated')
+    
+    # Get the row names at the identified indicies
+    row_names_up <- rownames(DEGs_list[[i]])[indices_up]
+    row_names_down <- rownames(DEGs_list[[i]])[indices_down]
+    
+    # Match the row names with the gene id in the gene names dataframe
+    matched_rows_up <- gene_names[gene_names$gene_id %in% row_names_up,]
+    matched_rows_down <- gene_names[gene_names$gene_id %in% row_names_down,]
+    
+    # Convert the gene names from the rows to the entrez id
+    genes_up_entrez <- matched_rows_up$gene_entrez_id
+    genes_down_entrez <- matched_rows_down$gene_entrez_id
+    genes_sig_entrez <- append(genes_up_entrez, genes_down_entrez)
+    
+    # Set a label for the name of the file with the contrast number and brain region
+    df_name_up <- paste0(region_label, "_up", i)
+    df_name_down <- paste0(region_label, "_down", i)
+    df_name_sig <- paste0(region_label, "_sig", i)
+    
+    # Store the gene names as text files in a designated folder
+    writeLines(as.character(genes_up_entrez),
+               paste(folder_path, df_name_up, ".txt", sep = ""))
+    writeLines(as.character(genes_down_entrez),
+               paste(folder_path, df_name_down, ".txt", sep = ""))
+    writeLines(as.character(genes_sig_entrez),
+               paste(folder_path, df_name_sig, ".txt", sep = ""))
+    
+    # Store the gene names in lists for each contrast
+    upregulated_list[[df_name_up]] <- genes_up_entrez
+    downregulated_list[[df_name_down]] <- genes_down_entrez
+    significant_list[[df_name_sig]] <- genes_sig_entrez
+  }
+  # Return the lists of stored upregulated, downregulated, and significant genes
+  return(list(up = upregulated_list, down = downregulated_list, sig = significant_list))
+}
+```
+
+```{r DEGs-stratified}
+# Find and store the DEGs for each of the brain regions
+comb_DEG_results <- DEGs_by_regulation(DEGs_comb, "comb", "DEGs/")
+HIP_DEG_results <- DEGs_by_regulation(DEGs_HIP, "HIP", "DEGs/")
+TCx_DEG_results <- DEGs_by_regulation(DEGs_TCx, "TCx", "DEGs/")
+PCx_DEG_results <- DEGs_by_regulation(DEGs_PCx, "PCx", "DEGs/")
+FWM_DEG_results <- DEGs_by_regulation(DEGs_FWM, "FWM", "DEGs/")
+```
+
+```{r common-DEGs-function}
+# Create a function to find the overlapping DEGs between the TD vs. TND and TD
+# vs. NTD comparisons for each stratification
+common_DEGs <- function(results, contrast1, contrast2, folder_path, genotype, region) { 
+  # Inputs:
+  # results: upregulated, downregulated, and significant DEGs identified
+  # contrast1: first contrast you want to find overlapping genes with
+  # contrast2: second contrast you want to find overlapping with the first
+  # folder_path: file path to store the gene lists in
+  # genotype: label for the APOE genotype the data corresponds to
+  # region: label for the brain region the data corresponds to
+  
+  # Outputs:
+  # significant_genes_condition1: list of the significant genes for contrast 1
+  # significant_genes_condition2: list of the significant genes for contrast 2
+  
+  # Store the upregulated, downregulated, and significant genes for contrast 1
+  # as a list
+  upregulated_genes_condition1 <- as.list(unlist(results$up[[contrast1]], " "))
+  downregulated_genes_condition1 <- as.list(unlist(results$down[[contrast1]], " "))
+  significant_genes_condition1 <- as.list(unlist(results$sig[[contrast1]], " "))
+  # Store the upregulated, downregulated, and significant genes for contrast 2
+  # as a list
+  upregulated_genes_condition2 <- as.list(unlist(results$up[[contrast2]], " "))
+  downregulated_genes_condition2 <- as.list(unlist(results$down[[contrast2]], " "))
+  significant_genes_condition2 <- as.list(unlist(results$sig[[contrast2]], " "))
+  
+  # Find the genes that intersect for upregulated genes between contrasts 1 and 2
+  intersect_up <- intersect(upregulated_genes_condition1, upregulated_genes_condition2)
+  # Find the genes that intersect for downregulated genes between contrasts 1 and 2
+  intersect_down <- intersect(downregulated_genes_condition1, downregulated_genes_condition2)
+  # Combine intersecting upregulated and downregulated genes
+  intersect_sig <- intersect(significant_genes_condition1, significant_genes_condition2)
+  
+  # Store common upregulated, downregulated, and significant genes to a folder
+  writeLines(as.character(intersect_up),
+                 paste(folder_path, genotype, "_intersect_up_", region, ".txt", sep = ""))
+  writeLines(as.character(intersect_down),
+                 paste(folder_path, genotype, "_intersect_down_", region, ".txt", sep = ""))
+  writeLines(as.character(intersect_sig),
+                 paste(folder_path, genotype, "_intersect_sig_", region, ".txt", sep = ""))
+  
+  # Return the significant genes for contrasts 1 and 2
+  return(list(cond1 = significant_genes_condition1, cond2 = significant_genes_condition2,
+              intersect = intersect_sig))
+}
+```
+
+```{r common-DEGs-stratified}
+# Store results for the common DEGs stratified by brain region and APOE genotype
+results_comb_apoe4_pos <- common_DEGs(comb_DEG_results, 1, 2, "Common_DEGs/", "apoe4_pos", "comb")
+results_comb_apoe4_neg <- common_DEGs(comb_DEG_results, 3, 4, "Common_DEGs/", "apoe4_neg", "comb")
+results_HIP_apoe4_pos <- common_DEGs(HIP_DEG_results, 1, 2, "Common_DEGs/", "apoe4_pos", "HIP")
+results_HIP_apoe4_neg <- common_DEGs(HIP_DEG_results, 3, 4, "Common_DEGs/", "apoe4_neg", "HIP")
+results_TCx_apoe4_pos <- common_DEGs(TCx_DEG_results, 1, 2, "Common_DEGs/", "apoe4_pos", "TCx")
+results_TCx_apoe4_neg <- common_DEGs(TCx_DEG_results, 3, 4, "Common_DEGs/", "apoe4_neg", "TCx")
+results_PCx_apoe4_pos <- common_DEGs(PCx_DEG_results, 1, 2, "Common_DEGs/", "apoe4_pos", "PCx")
+results_PCx_apoe4_neg <- common_DEGs(PCx_DEG_results, 3, 4, "Common_DEGs/", "apoe4_neg", "PCx")
+results_FWM_apoe4_pos <- common_DEGs(FWM_DEG_results, 1, 2, "Common_DEGs/", "apoe4_pos", "FWM")
+results_FWM_apoe4_neg <- common_DEGs(FWM_DEG_results, 3, 4, "Common_DEGs/", "apoe4_neg", "FWM")
+```
+
+```{r volcano-plot-function}
+# Create a function to create a volcano plot for the DEGs
+volcano_plot_DEGs <- function(DEGs_list, contrast, my_colors, 
+                              title_lab, leg_lab) {
+  # Inputs:
+  # DEGs_list: the list of the dataframes with the limma results from the 
+  #            differential gene expression analysis
+  # contrast: the comparison to plot
+  # my_colors: list of three colors for upregulated, not significant, and downregulated
+  # title_lab: title for the plot
+  # leg_lab: title for the legend
+  
+  # Outputs:
+  # volcano_plot: the plot
+  
+  # Create a volcano plot
+  volcano_plot <- ggplot(DEGs_list[[contrast]],
+                         # x-axis of logFC and y-axis as P.Value or adj.P.val    
+                         aes(x = logFC,
+                             y = -log10(P.Value))) +
+    # Create data points with 60% opacity and colored by significance
+    geom_point(alpha = 0.6,
+               aes(color = significance)) +
+    # Define the colors manually
+    scale_color_manual(values = my_colors) +
+    # Create a vertical line for the logFC cutoff of 0.5
+    geom_vline(xintercept = c(-0.5, 0.5),
+               linetype = "dashed",
+               color = "black",
+               linewidth = 0.5) +
+    # Create horizontal line for p-value cutoff of 0.05
+    geom_hline(yintercept = -log10(0.05),
+               linetype = "dashed",
+               color = "black",
+               linewidth = 0.5) +
+    # Add plot labels
+    labs(title = title_lab,
+         color = leg_lab) +
+    # Set x and y limits
+    xlim(-11, 11) +
+    ylim(0, 11) +
+    theme_minimal() +
+    # Adjusted text locations and size
+    theme(legend.title = element_text(hjust = 0.5, size = 18),
+          plot.title = element_text(hjust = 0.5, size = 18),
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 16),
+          legend.text = element_text(size = 16))
+  # Return the plot
+  return(volcano_plot)
+}
+```
+
+```{r generate-volcano-plots-stratified}
+# Store the volcano plots stratified by brain region and APOE genotype
+apoe4_pos_TD_v_TND_comb <- volcano_plot_DEGs(DEGs_comb, 1,
+                                             c("red", "grey", "blue"), 
+                                             "Dementia related DEGs among APOE4+\ndonors with TBI in combined brain regions",
+                                             "Expression Change")
+apoe4_pos_TD_v_NTD_comb <- volcano_plot_DEGs(DEGs_comb, 2,
+                                             c("red", "grey", "blue"), 
+                                             "TBI related DEGs among APOE4+ donors\nwith dementia in combined brain regions",
+                                             "Expression Change")
+# Store the volcano plots stratified by brain region and APOE genotype
+apoe4_neg_TD_v_TND_comb <- volcano_plot_DEGs(DEGs_comb, 3,
+                                             c("red", "grey", "blue"), 
+                                             "Dementia related DEGs among APOE4-\ndonors with TBI in combined brain regions",
+                                             "Expression Change")
+apoe4_neg_TD_v_NTD_comb <- volcano_plot_DEGs(DEGs_comb, 4,
+                                             c("red", "grey", "blue"), 
+                                             "TBI related DEGs among APOE4- donors\nwith dementia in combined brain regions",
+                                             "Expression Change")
+
+
+apoe4_pos_TD_v_TND_HIP <- volcano_plot_DEGs(DEGs_HIP, 1,
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4+\ndonors with TBI in the hippocampus",
+                                            "Expression Change")
+apoe4_pos_TD_v_NTD_HIP <- volcano_plot_DEGs(DEGs_HIP, 2,
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4+ donors\n with dementia in the hippocampus",
+                                            "Expression Change")
+apoe4_neg_TD_v_TND_HIP <- volcano_plot_DEGs(DEGs_HIP, 3,
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4-\ndonors with TBI in the hippocampus",
+                                            "Expression Change")
+apoe4_neg_TD_v_NTD_HIP <- volcano_plot_DEGs(DEGs_HIP, 4, 
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4- donors\n with dementia in the hippocampus",
+                                            "Expression Change")
+
+
+apoe4_pos_TD_v_TND_TCx <- volcano_plot_DEGs(DEGs_TCx, 1, 
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4+\ndonors with TBI in the temporal cortex",
+                                            "Expression Change")
+apoe4_pos_TD_v_NTD_TCx <- volcano_plot_DEGs(DEGs_TCx, 2,
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4+ donors\n with dementia in the temporal cortex",
+                                            "Expression Change")
+apoe4_neg_TD_v_TND_TCx <- volcano_plot_DEGs(DEGs_TCx, 3, 
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4-\ndonors with TBI in the temporal cortex",
+                                            "Expression Change")
+apoe4_neg_TD_v_NTD_TCx <- volcano_plot_DEGs(DEGs_TCx, 4, 
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4- donors\n with dementia in the temporal cortex",
+                                            "Expression Change")
+
+
+apoe4_pos_TD_v_TND_PCx <- volcano_plot_DEGs(DEGs_PCx, 1,
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4+\ndonors with TBI in the parietal cortex",
+                                            "Expression Change")
+apoe4_pos_TD_v_NTD_PCx <- volcano_plot_DEGs(DEGs_PCx, 2, 
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4+ donors\n with dementia in the parietal cortex",
+                                            "Expression Change")
+apoe4_neg_TD_v_TND_PCx <- volcano_plot_DEGs(DEGs_PCx, 3, 
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4-\ndonors with TBI in the parietal cortex",
+                                            "Expression Change")
+apoe4_neg_TD_v_NTD_PCx <- volcano_plot_DEGs(DEGs_PCx, 4, 
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4- donors\n with dementia in the parietal cortex",
+                                            "Expression Change")
+
+
+apoe4_pos_TD_v_TND_FWM <- volcano_plot_DEGs(DEGs_FWM, 1, 
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4+\ndonors with TBI in the forebrain white matter",
+                                            "Expression Change")
+apoe4_pos_TD_v_NTD_FWM <- volcano_plot_DEGs(DEGs_FWM, 2, 
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4+ donors\n with dementia in the forebrain white matter",
+                                            "Expression Change")
+apoe4_neg_TD_v_TND_FWM <- volcano_plot_DEGs(DEGs_FWM, 3, 
+                                            c("red", "grey", "blue"), 
+                                            "Dementia related DEGs among APOE4-\ndonors with TBI in the forebrain white matter",
+                                            "Expression Change")
+apoe4_neg_TD_v_NTD_FWM <- volcano_plot_DEGs(DEGs_FWM, 4, 
+                                            c("red", "grey", "blue"), 
+                                            "TBI related DEGs among APOE4- donors\n with dementia in the forebrain white matter",
+                                            "Expression Change")
+```
+
+```{r print-stratified-volcano-plots}
+# Print volcano plots for all brain regions combined
+print(apoe4_pos_TD_v_TND_comb)
+print(apoe4_pos_TD_v_NTD_comb)
+print(apoe4_neg_TD_v_TND_comb)
+print(apoe4_neg_TD_v_NTD_comb)
+
+# Print volcano plots for the hippocampus
+print(apoe4_pos_TD_v_TND_HIP)
+print(apoe4_pos_TD_v_NTD_HIP)
+print(apoe4_neg_TD_v_TND_HIP)
+print(apoe4_neg_TD_v_NTD_HIP)
+
+# Print volcano plots for the temporal cortex
+print(apoe4_pos_TD_v_TND_TCx)
+print(apoe4_pos_TD_v_NTD_TCx)
+print(apoe4_neg_TD_v_TND_TCx)
+print(apoe4_neg_TD_v_NTD_TCx)
+
+# Print volcano plots for the parietal cortex
+print(apoe4_pos_TD_v_TND_PCx)
+print(apoe4_pos_TD_v_NTD_PCx)
+print(apoe4_neg_TD_v_TND_PCx)
+print(apoe4_neg_TD_v_NTD_PCx)
+
+# Print volcano plots for the forebrain white matter
+print(apoe4_pos_TD_v_TND_FWM)
+print(apoe4_pos_TD_v_NTD_FWM)
+print(apoe4_neg_TD_v_TND_FWM)
+print(apoe4_neg_TD_v_NTD_FWM)
+```
+
+```{r venn-diagram-function}
+# Create a function to plot venn diagrams to show overlap in TD vs. TND identified
+# DEGs and TD vs. NTD identified DEGs for each brain region and APOE genotype
+# stratification
+plot_venn_diagram <- function(results) {
+  # Inputs:
+  # results: significant genes for each contrast (1 being TD vs. TND and 2 being
+  #          TD vs. NTD)
+  
+  # Outputs:
+  # venn: the information to plot the venn diagram
+  
+  # Create venn diagram with the two lists of genes for each contrast
+  venn <- venn.diagram(list("TD vs. NTD" = results[[1]], 
+                            "TD vs. TND" = results[[2]]),
+                       # Define the color
+                       fill = c("#298c8c", "#f1a226"),
+                       # Define the opacity
+                       alpha = c(0.5, 0.5),
+                       # Adjust the aesthetics
+                       lwd = 0,
+                       cat.pos = c(0, 0),
+                       fontface = "bold",
+                       filename = NULL)
+  # Return the venn diagram information
+  return(venn)
+}
+```
+
+```{r create-venn-diagrams}
+# Use the plot_venn_diagram function to create venn diagrams for each brain 
+# region and APOE genotype stratification
+venn_apoe4_pos_comb <- plot_venn_diagram(results_comb_apoe4_pos)
+venn_apoe4_neg_comb <- plot_venn_diagram(results_comb_apoe4_neg)
+
+venn_apoe4_pos_HIP <- plot_venn_diagram(results_HIP_apoe4_pos)
+venn_apoe4_neg_HIP <- plot_venn_diagram(results_HIP_apoe4_neg)
+
+venn_apoe4_pos_TCx <- plot_venn_diagram(results_TCx_apoe4_pos)
+venn_apoe4_neg_TCx <- plot_venn_diagram(results_TCx_apoe4_neg)
+
+venn_apoe4_pos_PCx <- plot_venn_diagram(results_PCx_apoe4_pos)
+venn_apoe4_neg_PCx <- plot_venn_diagram(results_PCx_apoe4_neg)
+
+venn_apoe4_pos_FWM <- plot_venn_diagram(results_FWM_apoe4_pos)
+venn_apoe4_neg_FWM <- plot_venn_diagram(results_FWM_apoe4_neg)
+```
+
+```{r plot-apoe4-pos-comb-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_pos_comb)
+# Add title
+grid.text("APOE4+ Common DEGs: All Brain Regions", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"), 
+          just = "center")
+```
+
+```{r plot-apoe4-neg-comb-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_neg_comb)
+# Add title
+grid.text("APOE4- Common DEGs: All Brain Regions", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-pos-HIP-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_pos_HIP)
+# Add title
+grid.text("APOE4+ Common DEGs: Hippocampus", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-neg-HIP-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_neg_HIP)
+# Add title
+grid.text("APOE4- Common DEGs: Hippocampus", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-pos-TCx-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_pos_TCx)
+# Add title
+grid.text("APOE4+ Common DEGs: Temporal Cortex", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-neg-TCx-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_neg_TCx)
+# Add title
+grid.text("APOE4- Common DEGs: Temporal Cortex", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-pos-PCx-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_pos_PCx)
+# Add title
+grid.text("APOE4+ Common DEGs: Parietal Cortex", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-neg-PCx-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_neg_PCx)
+# Add title
+grid.text("APOE4- Common DEGs: Parietal Cortex", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-pos-FWM-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_pos_FWM)
+# Add title
+grid.text("APOE4+ Common DEGs: Forebrain White Matter", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r plot-apoe4-neg-FWM-venn-diag}
+# Plot venn diagram
+grid.draw(venn_apoe4_neg_FWM)
+# Add title
+grid.text("APOE4- Common DEGs: Forebrain White Matter", x = unit(0.5, "npc"),
+          y = unit(0.9, "npc"), gp = gpar(fontsize = 16, fontface = "bold"),
+          just = "center")
+```
+
+```{r data-subsets}
+# List of DEGs identified for the APOE4+ and APOE4- subgroups
+genes_apoe4_pos <- as.character(gene_names[gene_names$gene_entrez_id %in% 
+                                             results_PCx_apoe4_pos$intersect, ]$gene_id)
+genes_apoe4_neg <- as.character(gene_names[gene_names$gene_entrez_id %in% 
+                                             results_PCx_apoe4_neg$intersect, ]$gene_id)
+
+# Create subsets of the data that only include the DEGs identified for either 
+# the APOE4+ of APOE4- subgroup
+apoe4_all_df <- samples_grouped_combined[, colnames(samples_grouped_combined) %in% 
+                                           c(genes_apoe4_pos, 'group')]
+no_apoe4_all_df <- samples_grouped_combined[, colnames(samples_grouped_combined) %in% 
+                                              c(genes_apoe4_neg, 'group')]
+```
+
+```{r export-data-subsets}
+# Export the dataframes as csv files
+write.csv(apoe4_all_df, file = file.path("subsets", "apoe4_all_df.csv"), row.names = TRUE)
+write.csv(no_apoe4_all_df, file = file.path("subsets", "no_apoe4_all_df.csv"), row.names = TRUE)
+```
+
