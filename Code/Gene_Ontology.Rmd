@@ -1,0 +1,65 @@
+---
+title: "Gene Pathways"
+output: html_document
+date: "2024-04-10"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages}
+library(circlize)
+```
+
+```{r load-data}
+# Load the matrix of pathway annotations for the APOE4+ and APOE4- groups
+apoe4_path <- read.csv("New_Data/apoe4_pathway.csv", header = TRUE, row.names = 1)
+apoe4_path <- as.matrix(t(apoe4_path))
+non_apoe4_path <- read.csv("New_Data/non_apoe4_pathway.csv", header = TRUE, row.names = 1)
+non_apoe4_path <- as.matrix(t(non_apoe4_path))
+```
+
+```{r}
+# Define the matrix
+mat <- apoe4_path
+
+# Adjust the plot margins and plot region size
+par(mar = c(0, 0, 0, 0))
+circos.par("canvas.xlim" = c(-1, 0))
+
+# Plot the chord diagram
+chordDiagram(mat, annotationTrack = "grid", preAllocateTracks = 1)
+
+# Add labels outside the plot region
+circos.trackPlotRegion(track.index = 1, panel.fun = function(x, y) {
+  xlim = get.cell.meta.data("xlim")
+  ylim = get.cell.meta.data("ylim")
+  sector.name = get.cell.meta.data("sector.index")
+  circos.text(mean(xlim), ylim[1] + 0.1, sector.name, facing = "clockwise", 
+              niceFacing = TRUE, adj = c(0, 0.5))
+}, bg.border = NA)
+```
+
+```{r}
+# Define the matrix
+mat <- non_apoe4_path
+
+# Adjust the plot margins and plot region size
+par(mar = c(0, 0, 0, 0))
+circos.par("canvas.xlim" = c(-1, 0))
+
+# Plot the chord diagram
+chordDiagram(mat, annotationTrack = "grid", preAllocateTracks = 1)
+
+# Add labels outside the plot region
+circos.trackPlotRegion(track.index = 1, panel.fun = function(x, y) {
+  xlim = get.cell.meta.data("xlim")
+  ylim = get.cell.meta.data("ylim")
+  sector.name = get.cell.meta.data("sector.index")
+  circos.text(mean(xlim), ylim[1] + 0.1, sector.name, facing = "clockwise", 
+              niceFacing = TRUE, adj = c(0, 0.5))
+}, bg.border = NA)
+```
